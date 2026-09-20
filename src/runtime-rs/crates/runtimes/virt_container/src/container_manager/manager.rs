@@ -7,7 +7,10 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use agent::Agent;
 use common::{
@@ -30,6 +33,7 @@ use tracing::instrument;
 use kata_sys_util::{hooks::HookStates, netns::NetnsGuard};
 
 use crate::container_manager::is_termination_signal;
+use crate::checkpoint_restore::CheckpointMetadata;
 use crate::oom::CrioOomNotifier;
 
 use super::{logger_with_process, Container};
@@ -37,12 +41,14 @@ use super::{logger_with_process, Container};
 pub struct VirtContainerManager {
     sid: String,
     pid: u32,
-    containers: Arc<RwLock<HashMap<String, Container>>>,
+    pub(crate) containers: Arc<RwLock<HashMap<String, Container>>>,
     resource_manager: Arc<ResourceManager>,
     agent: Arc<dyn Agent>,
-    hypervisor: Arc<dyn Hypervisor>,
+    pub(crate) hypervisor: Arc<dyn Hypervisor>,
     vmm_master_tid: OnceCell<u32>,
     oom_notifier: Arc<CrioOomNotifier>,
+    restore_checkpoint: Option<String>,
+    restored_container_ids: RwLock<HashSet<String>>,
 }
 
 impl std::fmt::Debug for VirtContainerManager {
@@ -69,6 +75,7 @@ impl VirtContainerManager {
         hypervisor: Arc<dyn Hypervisor>,
         resource_manager: Arc<ResourceManager>,
         oom_notifier: Arc<CrioOomNotifier>,
+        restore_checkpoint: Option<String>,
     ) -> Self {
         Self {
             sid: sid.to_string(),
@@ -79,6 +86,8 @@ impl VirtContainerManager {
             hypervisor,
             vmm_master_tid: OnceCell::new(),
             oom_notifier,
+            restore_checkpoint,
+            restored_container_ids: Default::default(),
         }
     }
 
@@ -106,6 +115,66 @@ impl ContainerManager for VirtContainerManager {
         )
         .await
         .context("new container")?;
+
+        if let Some(checkpoint_dir) = &self.restore_checkpoint {
+            let metadata_path = std::path::Path::new(checkpoint_dir).join("metadata.json");
+            let metadata: CheckpointMetadata = serde_json::from_slice(
+                &tokio::fs::read(&metadata_path)
+                    .await
+                    .with_context(|| format!("read {}", metadata_path.display()))?,
+            )
+            .context("parse checkpoint metadata")?;
+            let new_type = kata_types::k8s::container_type(&spec);
+            let new_name = kata_types::k8s::container_name(&spec);
+            let mut adopted = self.restored_container_ids.write().await;
+            let candidates: Vec<_> = metadata
+                .containers
+                .iter()
+                .filter(|saved| {
+                    !adopted.contains(&saved.old_id)
+                        && kata_types::k8s::container_type(&saved.spec) == new_type
+                })
+                .collect();
+            let saved = candidates
+                .iter()
+                .find(|saved| {
+                    !new_name.is_empty()
+                        && kata_types::k8s::container_name(&saved.spec) == new_name
+                })
+                .copied()
+                .or_else(|| (candidates.len() == 1).then(|| candidates[0]))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "cannot uniquely match restored {:?} container {:?}; {} candidates remain",
+                        new_type,
+                        new_name,
+                        candidates.len()
+                    )
+                })?;
+            let old_id = saved.old_id.clone();
+            self.agent
+                .rebind_sandbox(agent::RebindSandboxRequest {
+                    sandbox_id: self.sid.clone(),
+                    containers: vec![agent::ContainerIDMapping {
+                        old_id: old_id.clone(),
+                        new_id: config.container_id.clone(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .await
+                .context("rebind restored container id")?;
+            adopted.insert(old_id);
+            drop(adopted);
+            container.mark_adopted();
+            self.containers
+                .write()
+                .await
+                .insert(config.container_id.clone(), container);
+            return Ok(PID {
+                pid: vmm_master_tid,
+            });
+        }
 
         // CreateContainer Hooks:
         // * should be run in vmm namespace (hook path in runtime namespace)

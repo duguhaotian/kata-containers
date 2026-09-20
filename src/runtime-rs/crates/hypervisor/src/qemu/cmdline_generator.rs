@@ -1693,7 +1693,11 @@ impl Template {
 #[async_trait]
 impl ToQemuParams for Template {
     async fn qemu_params(&self) -> Result<Vec<String>> {
-        Ok(vec!["-incoming".to_owned(), "defer".to_owned()])
+        Ok(vec![
+            "-S".to_owned(),
+            "-incoming".to_owned(),
+            "defer".to_owned(),
+        ])
     }
 }
 
@@ -3257,11 +3261,16 @@ impl<'a> QemuCmdLine<'a> {
         }
         self.devices.push(Box::new(virtiofs_device));
 
-        // don't put the /dev/shm memory backend file into the anonymous container,
-        // there has to be at most one of those so keep it by name in Memory instead
+        // Keep guest RAM in a per-sandbox named file. Besides satisfying
+        // virtio-fs shared-memory requirements, this gives checkpoint/restore a
+        // stable file that can be copied while the VM is paused.
+        let memory_path = Path::new(virtiofsd_socket_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("/dev/shm"))
+            .join("memory");
         self.add_file_memory_backend(
             "entire-guest-memory-share",
-            "/dev/shm",
+            memory_path.to_string_lossy().as_ref(),
             true,
             false,
             self.config.memory_info.enable_mem_prealloc,
@@ -3316,6 +3325,10 @@ impl<'a> QemuCmdLine<'a> {
         };
 
         let mut mem_file = MemoryBackendFile::new("TODO", path, filesize);
+        // Read-only pmem images are immutable external state. Map them shared
+        // so x-ignore-shared excludes their RAMBlock from the migration stream
+        // instead of trying to restore bytes into a read-only mapping.
+        mem_file.set_share(is_readonly);
         mem_file.set_readonly(is_readonly);
         self.devices.push(Box::new(mem_file));
 

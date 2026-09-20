@@ -28,4 +28,5 @@ nav:
     - "4.1.0": releases/4.1.0.md
   - Misc:
     - Architecture: design/architecture_4.0/architecture.md
+    - QEMU Pod Checkpoint/Restore: design/qemu-pod-checkpoint-restore.md
     - Config Migration (runtime to runtime-rs): migrating-config-go-runtime-to-runtime-rs.md

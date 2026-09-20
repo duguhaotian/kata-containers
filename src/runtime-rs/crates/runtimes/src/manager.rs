@@ -6,9 +6,15 @@
 
 use anyhow::{anyhow, Context, Result};
 use common::{
-    RESTORE_PHASE_COMPLETE, RESTORE_PHASE_OPTION, RuntimeHandler, RuntimeInstance, Sandbox, SandboxNetworkEnv, error::Error as CommonError, message::{Action, Message}, types::{
-        ContainerProcess, DEFAULT_SHM_SIZE, PlatformInfo, ProcessType, RestoreSandboxInfo, SandboxConfig, SandboxRequest, SandboxResponse, SandboxStatusInfo, StartSandboxInfo, TaskRequest, TaskResponse,
+    error::Error as CommonError,
+    message::{Action, Message},
+    types::{
+        ContainerProcess, PlatformInfo, ProcessType, RestoreSandboxInfo, SandboxConfig,
+        SandboxRequest, SandboxResponse, SandboxStatusInfo, StartSandboxInfo, TaskRequest,
+        TaskResponse, DEFAULT_SHM_SIZE,
     },
+    RuntimeHandler, RuntimeInstance, Sandbox, SandboxNetworkEnv, RESTORE_PHASE_COMPLETE,
+    RESTORE_PHASE_OPTION,
 };
 
 use containerd_shim_protos::events::task::{TaskCreate, TaskDelete, TaskStart};
@@ -539,13 +545,13 @@ impl RuntimeHandlerManager {
                 .context("get runtime instance for sandbox restore")?;
 
             let restore_future = async {
-                let _checkpoint_restore = instance.checkpoint_restore.as_ref().ok_or_else(|| {
-                    CommonError::SandboxOperationUnsupported(
-                        "sandbox restore is unsupported by this runtime".to_string(),
-                    )
-                })?;
+                let _checkpoint_restore =
+                    instance.checkpoint_restore.as_ref().ok_or_else(|| {
+                        CommonError::SandboxOperationUnsupported(
+                            "sandbox restore is unsupported by this runtime".to_string(),
+                        )
+                    })?;
                 let info: Option<RestoreSandboxInfo> = None;
-
 
                 // TODO: do real work here
 
@@ -743,14 +749,43 @@ impl RuntimeHandlerManager {
 
                 Ok(SandboxResponse::ShutdownSandbox)
             }
-            SandboxRequest::CheckpointSandbox(mut _req) => {
-                let _checkpoint_restore = instance.checkpoint_restore.as_ref().ok_or_else(|| {
+            SandboxRequest::CheckpointSandbox(mut req) => {
+                let checkpoint_restore = instance.checkpoint_restore.as_ref().ok_or_else(|| {
                     CommonError::SandboxOperationUnsupported(
                         "sandbox checkpoint is unsupported by this runtime".to_string(),
                     )
                 })?;
 
-                // TODO; do real work here
+                checkpoint_restore
+                    .sandbox
+                    .validate_checkpoint_sandbox(&req)
+                    .await?;
+                checkpoint_restore
+                    .container_manager
+                    .prepare_checkpoint_tasks(&mut req.tasks)
+                    .await?;
+                checkpoint_restore
+                    .container_manager
+                    .pause_checkpoint_tasks(&req.tasks)
+                    .await?;
+
+                let checkpoint_result = checkpoint_restore.sandbox.checkpoint_sandbox(&req).await;
+                let resume_result = checkpoint_restore
+                    .container_manager
+                    .resume_checkpoint_tasks(&req.tasks)
+                    .await;
+
+                if let Err(checkpoint_err) = checkpoint_result {
+                    if let Err(resume_err) = resume_result {
+                        return Err(checkpoint_err).with_context(|| {
+                            format!(
+                                "failed to resume sandbox after checkpoint error: {resume_err:#}"
+                            )
+                        });
+                    }
+                    return Err(checkpoint_err);
+                }
+                resume_result.context("resume sandbox after checkpoint")?;
 
                 Ok(SandboxResponse::CheckpointSandbox)
             }

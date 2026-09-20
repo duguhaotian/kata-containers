@@ -20,6 +20,7 @@ Kata Containers design documents:
 - [Design for direct-assigned volume](direct-blk-device-assignment.md)
 - [Design for core-scheduling](core-scheduling.md)
 - [Virtualization Reference Architecture](kata-vra.md)
+- [QEMU Pod checkpoint and restore (verification design)](qemu-pod-checkpoint-restore.md)
 ---
 
 - [Design proposals](proposals)

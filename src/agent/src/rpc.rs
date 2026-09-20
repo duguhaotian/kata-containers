@@ -1585,6 +1585,46 @@ impl agent_ttrpc::AgentService for AgentService {
         Ok(Empty::new())
     }
 
+    async fn rebind_sandbox(
+        &self,
+        ctx: &TtrpcContext,
+        req: protocols::agent::RebindSandboxRequest,
+    ) -> ttrpc::Result<Empty> {
+        trace_rpc_call!(ctx, "rebind_sandbox", req);
+        is_allowed(&req).await?;
+
+        {
+            let mut sandbox = self.sandbox.lock().await;
+            if !req.sandbox_id.is_empty() {
+                sandbox.id = req.sandbox_id.clone();
+            }
+            if !req.hostname.is_empty() {
+                sandbox.hostname = req.hostname.clone();
+            }
+            for mapping in &req.containers {
+                if mapping.old_id == mapping.new_id {
+                    continue;
+                }
+                let mut container = sandbox
+                    .containers
+                    .remove(&mapping.old_id)
+                    .map_ttrpc_err(ttrpc::Code::NOT_FOUND, "restored container not found")?;
+                container.id = mapping.new_id.clone();
+                sandbox.containers.insert(mapping.new_id.clone(), container);
+            }
+        }
+
+        if !req.dns.is_empty() {
+            setup_guest_dns(sl(), &req.dns).map_ttrpc_err(same)?;
+            let mut sandbox = self.sandbox.lock().await;
+            for dns in req.dns {
+                sandbox.network.set_dns(dns);
+            }
+        }
+
+        Ok(Empty::new())
+    }
+
     async fn destroy_sandbox(
         &self,
         ctx: &TtrpcContext,

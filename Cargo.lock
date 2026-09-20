@@ -7275,7 +7275,6 @@ dependencies = [
  "oci-spec 0.10.0",
  "protobuf",
  "runtime-spec",
- "serde_json",
  "serial_test 0.10.0",
  "service",
  "sha2 0.11.0",
@@ -7295,8 +7294,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "common",
+ "containerd-shim-protos",
  "runtimes",
  "tokio",
+ "ttrpc",
 ]
 
 [[package]]
@@ -8710,7 +8711,6 @@ dependencies = [
  "sendfd",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "slog",
  "slog-scope",
  "strum 0.24.1",

@@ -9,7 +9,9 @@ version = "0.1.0"
 
 [dependencies]
 anyhow = { workspace = true }
-tokio = { features = ["rt", "rt-multi-thread"], workspace = true }
+containerd-shim-protos = { workspace = true }
+tokio = { features = ["fs", "rt", "rt-multi-thread"], workspace = true }
+ttrpc = { workspace = true }
 
 # Local dependencies
 common = { workspace = true }

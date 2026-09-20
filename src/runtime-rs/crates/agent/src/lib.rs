@@ -15,18 +15,19 @@ mod sock;
 pub mod types;
 pub use types::{
     ARPNeighbor, ARPNeighbors, AddArpNeighborRequest, AddSwapPathRequest, AddSwapRequest,
-    BlkioStatsEntry, CheckRequest, CloseStdinRequest, ContainerID, ContainerProcessID,
-    CopyFileRequest, CreateContainerRequest, CreateSandboxRequest, Empty, ExecProcessRequest,
-    FSGroup, FSGroupChangePolicy, GetDiagnosticDataRequest, GetDiagnosticDataResponse,
-    GetGuestDetailsRequest, GetIPTablesRequest, GetIPTablesResponse, GuestDetailsResponse,
-    HealthCheckResponse, IPAddress, IPFamily, Interface, Interfaces, ListProcessesRequest,
-    MemHotplugByProbeRequest, MetricsResponse, OnlineCPUMemRequest, OomEventResponse,
-    ReadStreamRequest, ReadStreamResponse, RemoveContainerRequest, ReseedRandomDevRequest,
-    ResizeVolumeRequest, Route, Routes, SetGuestDateTimeRequest, SetIPTablesRequest,
-    SetIPTablesResponse, SignalProcessRequest, StatsContainerResponse, Storage,
-    TtyWinResizeRequest, UpdateContainerRequest, UpdateInterfaceRequest, UpdateRoutesRequest,
-    VersionCheckResponse, VolumeStatsRequest, VolumeStatsResponse, WaitProcessRequest,
-    WaitProcessResponse, WriteStreamRequest, WriteStreamResponse,
+    BlkioStatsEntry, CheckRequest, CloseStdinRequest, ContainerID, ContainerIDMapping,
+    ContainerProcessID, CopyFileRequest, CreateContainerRequest, CreateSandboxRequest, Empty,
+    ExecProcessRequest, FSGroup, FSGroupChangePolicy, GetDiagnosticDataRequest,
+    GetDiagnosticDataResponse, GetGuestDetailsRequest, GetIPTablesRequest, GetIPTablesResponse,
+    GuestDetailsResponse, HealthCheckResponse, IPAddress, IPFamily, Interface, Interfaces,
+    ListProcessesRequest, MemHotplugByProbeRequest, MetricsResponse, OnlineCPUMemRequest,
+    OomEventResponse, ReadStreamRequest, ReadStreamResponse, RebindSandboxRequest,
+    RemoveContainerRequest, ReseedRandomDevRequest, ResizeVolumeRequest, Route, Routes,
+    SetGuestDateTimeRequest, SetIPTablesRequest, SetIPTablesResponse, SignalProcessRequest,
+    StatsContainerResponse, Storage, TtyWinResizeRequest, UpdateContainerRequest,
+    UpdateInterfaceRequest, UpdateRoutesRequest, VersionCheckResponse, VolumeStatsRequest,
+    VolumeStatsResponse, WaitProcessRequest, WaitProcessResponse, WriteStreamRequest,
+    WriteStreamResponse,
 };
 
 use anyhow::Result;
@@ -58,8 +59,11 @@ pub trait HealthService: Send + Sync {
 pub trait Agent: AgentManager + HealthService + Send + Sync {
     // sandbox
     async fn create_sandbox(&self, req: CreateSandboxRequest) -> Result<Empty>;
+    async fn rebind_sandbox(&self, req: RebindSandboxRequest) -> Result<Empty>;
     async fn destroy_sandbox(&self, req: Empty) -> Result<Empty>;
     async fn online_cpu_mem(&self, req: OnlineCPUMemRequest) -> Result<Empty>;
+    async fn reseed_random_dev(&self, req: ReseedRandomDevRequest) -> Result<Empty>;
+    async fn set_guest_date_time(&self, req: SetGuestDateTimeRequest) -> Result<Empty>;
 
     // network
     async fn add_arp_neighbors(&self, req: AddArpNeighborRequest) -> Result<Empty>;

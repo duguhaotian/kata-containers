@@ -115,6 +115,15 @@ LUKS
 ocicrypt
 RUSTSEC
 
+# Checkpoint / restore
+CheckpointPod
+RestorePod
+CheckpointSandbox
+RestoreSandbox
+RebindSandbox
+sandboxer
+kubelet
+
 # Container, Runtime & Misc terms
 Burstable
 cgroupsv1

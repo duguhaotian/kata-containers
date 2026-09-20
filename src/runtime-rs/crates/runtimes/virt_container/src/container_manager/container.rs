@@ -52,6 +52,7 @@ pub struct Container {
     resource_manager: Arc<ResourceManager>,
     logger: slog::Logger,
     pub(crate) passfd_listener_addr: Option<(String, u32)>,
+    adopted: bool,
 }
 
 fn process_uses_passfd_io(inner: &ContainerInner, process: &ContainerProcess) -> Result<bool> {
@@ -108,7 +109,12 @@ impl Container {
             resource_manager,
             logger,
             passfd_listener_addr,
+            adopted: false,
         })
+    }
+
+    pub(crate) fn mark_adopted(&mut self) {
+        self.adopted = true;
     }
 
     pub async fn create(&self, mut spec: oci::Spec) -> Result<()> {
@@ -325,7 +331,11 @@ impl Container {
         match process.process_type {
             ProcessType::Container => {
                 let res: Result<()> = async {
-                    inner.start_container(&process.container_id).await?;
+                    if self.adopted {
+                        inner.set_state(ProcessStatus::Running).await;
+                    } else {
+                        inner.start_container(&process.container_id).await?;
+                    }
 
                     if process_uses_passfd_io(&inner, process)? {
                         inner

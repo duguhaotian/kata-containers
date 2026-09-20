@@ -9,6 +9,7 @@ extern crate slog;
 
 logging::logger_with_subsystem!(sl, "virt-container");
 
+mod checkpoint_restore;
 mod container_manager;
 pub mod factory;
 pub mod health_check;
@@ -22,7 +23,10 @@ use std::sync::Arc;
 use agent::{kata::KataAgent, Agent, AGENT_KATA};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use common::{message::Message, types::SandboxConfig, RuntimeHandler, RuntimeInstance};
+use common::{
+    message::Message, types::SandboxConfig, CheckpointRestoreRuntime, RuntimeHandler,
+    RuntimeInstance,
+};
 use hypervisor::Hypervisor;
 #[cfg(all(
     feature = "dragonball",
@@ -166,6 +170,16 @@ impl RuntimeHandler for VirtContainer {
             .await?,
         );
         let pid = std::process::id();
+        let restore_checkpoint = sandbox_config
+            .annotations
+            .get("io.katacontainers.vm.checkpoint_dir")
+            .filter(|_| {
+                sandbox_config
+                    .annotations
+                    .get("io.katacontainers.vm.restore")
+                    .is_some_and(|value| value == "true")
+            })
+            .cloned();
 
         let sandbox = sandbox::VirtSandbox::new(
             sid,
@@ -185,10 +199,21 @@ impl RuntimeHandler for VirtContainer {
             hypervisor,
             resource_manager,
             sandbox.oom_notifier(),
+            restore_checkpoint,
         );
+        let sandbox = Arc::new(sandbox);
+        let container_manager = Arc::new(container_manager);
+        let checkpoint_restore = Arc::new(checkpoint_restore::VirtCheckpointRestore::new(
+            sandbox.clone(),
+            container_manager.clone(),
+        ));
         Ok(RuntimeInstance {
-            sandbox: Arc::new(sandbox),
-            container_manager: Arc::new(container_manager),
+            sandbox: sandbox.clone(),
+            container_manager: container_manager.clone(),
+            checkpoint_restore: Some(CheckpointRestoreRuntime {
+                sandbox: checkpoint_restore.clone(),
+                container_manager: checkpoint_restore,
+            }),
         })
     }
 

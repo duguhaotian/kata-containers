@@ -140,12 +140,12 @@ impl SandboxInner {
 
 #[derive(Clone)]
 pub struct VirtSandbox {
-    sid: String,
+    pub(crate) sid: String,
     msg_sender: Arc<Mutex<Sender<Message>>>,
     inner: Arc<RwLock<SandboxInner>>,
     resource_manager: Arc<ResourceManager>,
     agent: Arc<dyn Agent>,
-    hypervisor: Arc<dyn Hypervisor>,
+    pub(crate) hypervisor: Arc<dyn Hypervisor>,
     monitor: Arc<HealthCheck>,
     exit_notify_tx: watch::Sender<bool>,
     sandbox_config: Option<SandboxConfig>,
@@ -1009,6 +1009,10 @@ impl Sandbox for VirtSandbox {
             return Err(anyhow!("sandbox config is missing"));
         }
         let sandbox_config = self.sandbox_config.as_ref().unwrap();
+        let restoring = sandbox_config
+            .annotations
+            .get("io.katacontainers.vm.restore")
+            .is_some_and(|value| value == "true");
 
         // if sandbox is not in SandboxState::Init then return,
         // otherwise try to create sandbox
@@ -1044,6 +1048,16 @@ impl Sandbox for VirtSandbox {
             .prepare_before_start_vm(resources)
             .await
             .context("set up device before start vm")?;
+
+        if restoring {
+            let checkpoint_dir = sandbox_config
+                .annotations
+                .get("io.katacontainers.vm.checkpoint_dir")
+                .context("restore checkpoint directory annotation is missing")?;
+            self.prepare_restored_rootfs(checkpoint_dir)
+                .await
+                .context("rebuild restored virtio-fs rootfs")?;
+        }
 
         // start vm
         self.hypervisor.start_vm(10_000).await.context("start vm")?;
@@ -1130,39 +1144,53 @@ impl Sandbox for VirtSandbox {
             .start(&address)
             .await
             .context(format!("connect to address {:?}", &address))?;
-        self.set_agent_policy().await.context("set agent policy")?;
+        if !restoring {
+            self.set_agent_policy().await.context("set agent policy")?;
+        }
 
         self.resource_manager
             .setup_after_start_vm()
             .await
             .context("setup device after start vm")?;
 
-        // create sandbox in vm
-        let agent_config = self.agent.agent_config().await;
-        let kernel_modules = KernelModule::set_kernel_modules(agent_config.kernel_modules)?;
-        let req = agent::CreateSandboxRequest {
-            hostname: sandbox_config.hostname.clone(),
-            dns: sandbox_config.dns.clone(),
-            storages: self
-                .resource_manager
-                .get_storage_for_sandbox(self.shm_size)
+        if restoring {
+            self.agent
+                .rebind_sandbox(agent::RebindSandboxRequest {
+                    sandbox_id: id.to_string(),
+                    hostname: sandbox_config.hostname.clone(),
+                    dns: sandbox_config.dns.clone(),
+                    ..Default::default()
+                })
                 .await
-                .context("get storages for sandbox")?,
-            sandbox_pidns: false,
-            sandbox_id: id.to_string(),
-            guest_hook_path: self
-                .hypervisor
-                .hypervisor_config()
-                .await
-                .security_info
-                .guest_hook_path,
-            kernel_modules,
-        };
+                .context("rebind restored sandbox")?;
+        } else {
+            // create sandbox in vm
+            let agent_config = self.agent.agent_config().await;
+            let kernel_modules = KernelModule::set_kernel_modules(agent_config.kernel_modules)?;
+            let req = agent::CreateSandboxRequest {
+                hostname: sandbox_config.hostname.clone(),
+                dns: sandbox_config.dns.clone(),
+                storages: self
+                    .resource_manager
+                    .get_storage_for_sandbox(self.shm_size)
+                    .await
+                    .context("get storages for sandbox")?,
+                sandbox_pidns: false,
+                sandbox_id: id.to_string(),
+                guest_hook_path: self
+                    .hypervisor
+                    .hypervisor_config()
+                    .await
+                    .security_info
+                    .guest_hook_path,
+                kernel_modules,
+            };
 
-        self.agent
-            .create_sandbox(req)
-            .await
-            .context("create sandbox")?;
+            self.agent
+                .create_sandbox(req)
+                .await
+                .context("create sandbox")?;
+        }
 
         inner.state = SandboxState::Running;
         inner.created_at = Some(std::time::SystemTime::now());

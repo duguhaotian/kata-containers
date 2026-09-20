@@ -11,8 +11,8 @@ use std::{
 
 use async_trait::async_trait;
 use common::error::Error as CommonError;
-use common::types::{SandboxRequest, SandboxResponse};
 use common::types::utils::sandbox_operation_timeout;
+use common::types::{SandboxRequest, SandboxResponse};
 use containerd_shim_protos::{sandbox_api, sandbox_async};
 use runtimes::RuntimeHandlerManager;
 use ttrpc::{self, r#async::TtrpcContext};
@@ -113,6 +113,8 @@ impl_service!(
     sandbox_status | sandbox_api::SandboxStatusRequest | sandbox_api::SandboxStatusResponse,
     ping_sandbox | sandbox_api::PingRequest | sandbox_api::PingResponse,
     shutdown_sandbox | sandbox_api::ShutdownSandboxRequest | sandbox_api::ShutdownSandboxResponse,
-    checkpoint_sandbox | sandbox_api::CheckpointSandboxRequest | sandbox_api::CheckpointSandboxResponse,
+    checkpoint_sandbox
+        | sandbox_api::CheckpointSandboxRequest
+        | sandbox_api::CheckpointSandboxResponse,
     restore_sandbox | sandbox_api::RestoreSandboxRequest | sandbox_api::RestoreSandboxResponse
 );

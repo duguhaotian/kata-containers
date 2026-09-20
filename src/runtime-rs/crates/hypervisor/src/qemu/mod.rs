@@ -59,11 +59,13 @@ impl Hypervisor for Qemu {
         &self,
         id: &str,
         netns: Option<String>,
-        _annotations: &HashMap<String, String>,
+        annotations: &HashMap<String, String>,
         selinux_label: Option<String>,
     ) -> Result<()> {
         let mut inner = self.inner.write().await;
-        inner.prepare_vm(id, netns, selinux_label).await
+        inner
+            .prepare_vm(id, netns, annotations, selinux_label)
+            .await
     }
 
     async fn start_vm(&self, timeout: i32) -> Result<()> {
@@ -105,6 +107,11 @@ impl Hypervisor for Qemu {
     async fn save_vm(&self) -> Result<()> {
         let mut inner = self.inner.write().await;
         inner.save_vm().await
+    }
+
+    async fn save_vm_to(&self, output_path: &str) -> Result<()> {
+        let mut inner = self.inner.write().await;
+        inner.save_vm_to(output_path).await
     }
 
     async fn add_device(&self, device: DeviceType) -> Result<DeviceType> {

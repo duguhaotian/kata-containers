@@ -133,6 +133,9 @@ impl VsockDevice {
     }
 
     pub async fn init_config(&mut self) -> Result<File> {
+        if (3..u32::MAX).contains(&self.config.guest_cid) {
+            return bind_vhost_vsock_cid(self.config.guest_cid).await;
+        }
         let (guest_cid, vhost_fd) = generate_vhost_vsock_cid()
             .await
             .context("generate vhost vsock cid failed")?;
@@ -186,15 +189,26 @@ impl Device for VsockDevice {
     }
 }
 
-pub async fn generate_vhost_vsock_cid() -> Result<(u32, File)> {
-    let vhost_fd = OpenOptions::new()
+async fn open_vhost_vsock() -> Result<File> {
+    OpenOptions::new()
         .read(true)
         .write(true)
         .open(VHOST_VSOCK_DEVICE)
         .await
         .context(format!(
             "failed to open {VHOST_VSOCK_DEVICE}, try to run modprobe vhost_vsock."
-        ))?;
+        ))
+}
+
+async fn bind_vhost_vsock_cid(guest_cid: u32) -> Result<File> {
+    let vhost_fd = open_vhost_vsock().await?;
+    unsafe { vhost_vsock_set_guest_cid(vhost_fd.as_raw_fd(), &(guest_cid as u64)) }
+        .with_context(|| format!("failed to set restored vsock CID {guest_cid}"))?;
+    Ok(vhost_fd)
+}
+
+pub async fn generate_vhost_vsock_cid() -> Result<(u32, File)> {
+    let vhost_fd = open_vhost_vsock().await?;
     let mut rng = rand::rng();
 
     // Try 50 times to find a context ID that is not in use.

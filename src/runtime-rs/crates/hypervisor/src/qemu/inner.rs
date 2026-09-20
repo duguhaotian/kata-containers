@@ -33,6 +33,7 @@ use kata_types::{
 use persist::sandbox_persist::Persist;
 use qapi_qmp::MigrationStatus;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fs;
 use std::io;
@@ -54,6 +55,54 @@ use tokio::{
 const VSOCK_SCHEME: &str = "vsock";
 const MEMLOCK_HEADROOM_DIVISOR: u64 = 10;
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
+struct CheckpointVmIdentity {
+    vsock_cid: u32,
+    #[serde(default)]
+    guest_macs: Vec<String>,
+}
+
+fn parse_guest_mac(mac: &str) -> Result<crate::Address> {
+    let bytes: Vec<u8> = mac
+        .split(':')
+        .map(|part| u8::from_str_radix(part, 16))
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("parse guest MAC {mac}"))?;
+    let bytes: [u8; 6] = bytes
+        .try_into()
+        .map_err(|_| anyhow!("guest MAC {mac} is not 6 bytes"))?;
+    Ok(crate::Address(bytes))
+}
+
+async fn load_checkpoint_vm_identity(checkpoint_dir: &Path) -> Result<CheckpointVmIdentity> {
+    let vm_path = checkpoint_dir.join("vm.json");
+    if vm_path.exists() {
+        return serde_json::from_slice(
+            &tokio::fs::read(&vm_path)
+                .await
+                .with_context(|| format!("read {}", vm_path.display()))?,
+        )
+        .context("parse checkpoint vm.json");
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &tokio::fs::read(checkpoint_dir.join("metadata.json"))
+            .await
+            .context("read checkpoint metadata")?,
+    )
+    .context("parse checkpoint metadata")?;
+    let vsock_cid = metadata
+        .get("agent_socket")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|address| address.strip_prefix("vsock://"))
+        .context("checkpoint metadata has no vsock agent socket")?
+        .parse::<u32>()
+        .context("parse checkpoint vsock CID")?;
+    Ok(CheckpointVmIdentity {
+        vsock_cid,
+        guest_macs: Vec::new(),
+    })
+}
+
 #[derive(Debug)]
 pub struct QemuInner {
     /// sandbox id
@@ -65,6 +114,7 @@ pub struct QemuInner {
     config: HypervisorConfig,
     devices: Vec<DeviceType>,
     netns: Option<String>,
+    restore_path: Option<String>,
 
     exit_notify: Option<mpsc::Sender<()>>,
 }
@@ -78,6 +128,7 @@ impl QemuInner {
             config: Default::default(),
             devices: Vec::new(),
             netns: None,
+            restore_path: None,
 
             exit_notify: Some(exit_notify),
         }
@@ -87,11 +138,20 @@ impl QemuInner {
         &mut self,
         id: &str,
         netns: Option<String>,
+        annotations: &HashMap<String, String>,
         selinux_label: Option<String>,
     ) -> Result<()> {
         info!(sl!(), "Preparing QEMU VM");
         self.id = id.to_string();
         self.netns = netns;
+        self.restore_path = annotations
+            .get("io.katacontainers.vm.checkpoint_dir")
+            .filter(|_| {
+                annotations
+                    .get("io.katacontainers.vm.restore")
+                    .is_some_and(|value| value == "true")
+            })
+            .cloned();
 
         if !self.hypervisor_config().disable_selinux {
             if let Some(label) = selinux_label.as_ref() {
@@ -116,6 +176,50 @@ impl QemuInner {
         // prepare_before_start_vm() never calls get_jailer_root(), so it must
         // be done here explicitly. In rootless mode the path is under XDG_RUNTIME_DIR.
         let jailer_root = self.get_jailer_root().await?;
+
+        if let Some(checkpoint_dir) = &self.restore_path {
+            let identity = load_checkpoint_vm_identity(Path::new(checkpoint_dir))
+                .await
+                .context("load checkpoint VM identity")?;
+            let mut macs = identity.guest_macs.into_iter();
+            for device in &mut self.devices {
+                match device {
+                    DeviceType::Vsock(vsock) => {
+                        vsock.config.guest_cid = identity.vsock_cid;
+                    }
+                    DeviceType::Network(network) => {
+                        if let Some(mac) = macs.next() {
+                            network.config.guest_mac = Some(parse_guest_mac(&mac)?);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let memory_dest = self
+                .devices
+                .iter()
+                .find_map(|device| match device {
+                    DeviceType::ShareFs(share_fs) if share_fs.config.fs_type == "virtio-fs" => {
+                        Path::new(&share_fs.config.sock_path)
+                            .parent()
+                            .map(|parent| parent.join("memory"))
+                    }
+                    _ => None,
+                })
+                .context("restore requires a virtio-fs memory backend")?;
+            let checkpoint_dir = Path::new(checkpoint_dir);
+            tokio::fs::copy(checkpoint_dir.join("memory"), &memory_dest)
+                .await
+                .with_context(|| {
+                    format!("copy checkpoint memory into {}", memory_dest.display())
+                })?;
+            self.config.vm_template.boot_from_template = true;
+            self.config.vm_template.device_state_path = checkpoint_dir
+                .join("device-state")
+                .to_string_lossy()
+                .into_owned();
+        }
 
         check_bpf_enabled(self.config.security_info.seccomp_sandbox.as_deref());
 
@@ -584,10 +688,9 @@ impl QemuInner {
             Err(e) => return Err(e),
         }
 
-        // Overall timeout for migration.
-        // Regarding why the timeout is set to 280ms and whether it should be adjusted, we need more empirical data.
-        // For now, we will keep using the previous configuration.
-        let timeout = Duration::from_millis(280);
+        // Running-sandbox checkpoints can contain substantially more device state
+        // than boot templates. Keep a bounded but practical timeout.
+        let timeout = Duration::from_secs(30);
 
         // Polling interval: start small, then back off to reduce load.
         let poll_interval = Duration::from_millis(20);
@@ -662,14 +765,95 @@ impl QemuInner {
     }
 
     pub(crate) async fn save_vm(&mut self) -> Result<()> {
+        let path = self.config.vm_template.device_state_path.clone();
+        self.save_vm_state(&path, self.config.vm_template.boot_to_be_template)
+            .await
+    }
+
+    pub(crate) async fn save_vm_to(&mut self, output_path: &str) -> Result<()> {
+        let output = Path::new(output_path);
+        tokio::fs::create_dir_all(output)
+            .await
+            .with_context(|| format!("create checkpoint directory {}", output.display()))?;
+
+        let memory_source = self
+            .devices
+            .iter()
+            .find_map(|device| match device {
+                DeviceType::ShareFs(share_fs) if share_fs.config.fs_type == "virtio-fs" => {
+                    Path::new(&share_fs.config.sock_path)
+                        .parent()
+                        .map(|parent| parent.join("memory"))
+                }
+                _ => None,
+            })
+            .context("virtio-fs memory backing file not found")?;
+        let device_state = output.join("device-state");
+
+        self.save_vm_state(
+            device_state
+                .to_str()
+                .context("checkpoint device-state path is not UTF-8")?,
+            true,
+        )
+        .await?;
+
+        let memory_dest = output.join("memory");
+        tokio::fs::copy(&memory_source, &memory_dest)
+            .await
+            .with_context(|| {
+                format!(
+                    "copy guest memory {} to {}",
+                    memory_source.display(),
+                    memory_dest.display()
+                )
+            })?;
+        tokio::fs::File::open(&memory_dest)
+            .await?
+            .sync_all()
+            .await
+            .context("sync checkpoint memory")?;
+
+        let identity = CheckpointVmIdentity {
+            vsock_cid: self
+                .devices
+                .iter()
+                .find_map(|device| match device {
+                    DeviceType::Vsock(vsock) => Some(vsock.config.guest_cid),
+                    _ => None,
+                })
+                .context("checkpoint vsock CID missing")?,
+            guest_macs: self
+                .devices
+                .iter()
+                .filter_map(|device| match device {
+                    DeviceType::Network(network) => network
+                        .config
+                        .guest_mac
+                        .as_ref()
+                        .map(|mac| format!("{:?}", mac)),
+                    _ => None,
+                })
+                .collect(),
+        };
+        tokio::fs::write(
+            output.join("vm.json"),
+            serde_json::to_vec_pretty(&identity).context("serialize VM identity")?,
+        )
+        .await
+        .context("write checkpoint VM identity")?;
+        Ok(())
+    }
+
+    async fn save_vm_state(&mut self, device_state_path: &str, ignore_shared: bool) -> Result<()> {
         let qmp = self.qmp.as_mut().ok_or(anyhow!("QMP not initialized"))?;
 
-        if self.config.vm_template.boot_to_be_template {
+        if ignore_shared {
             qmp.set_ignore_shared_memory_capability()
                 .context("failed to set ignore shared memory capability")?;
         }
 
-        let uri = format!("exec:cat >{}", self.config.vm_template.device_state_path);
+        let uri = format!("exec:cat >{device_state_path}");
 
         qmp.execute_migration(&uri)
             .context("failed to execute migration")?;
@@ -1465,6 +1649,7 @@ impl Persist for QemuInner {
             config: hypervisor_state.config,
             devices: Vec::new(),
             netns: None,
+            restore_path: None,
 
             exit_notify: Some(exit_notify),
         })
