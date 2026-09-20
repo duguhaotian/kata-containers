@@ -4,8 +4,8 @@
 
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
-**Id** | **string** |  | 
-**RateLimiterConfig** | [**RateLimiterConfig**](RateLimiterConfig.md) |  | 
+**Id** | **string** |  |
+**RateLimiterConfig** | [**RateLimiterConfig**](RateLimiterConfig.md) |  |
 
 ## Methods
 

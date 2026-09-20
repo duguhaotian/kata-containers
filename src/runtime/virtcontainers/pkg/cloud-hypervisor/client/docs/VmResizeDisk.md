@@ -4,8 +4,8 @@
 
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
-**Id** | Pointer to **string** | disk identifier | [optional] 
-**DesiredSize** | Pointer to **int64** | desired disk size in bytes | [optional] 
+**Id** | Pointer to **string** | disk identifier | [optional]
+**DesiredSize** | Pointer to **int64** | desired disk size in bytes | [optional]
 
 ## Methods
 

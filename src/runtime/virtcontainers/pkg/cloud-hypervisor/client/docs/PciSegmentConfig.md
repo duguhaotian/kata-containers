@@ -4,9 +4,9 @@
 
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
-**PciSegment** | **int32** |  | 
-**Mmio32ApertureWeight** | Pointer to **int32** |  | [optional] 
-**Mmio64ApertureWeight** | Pointer to **int32** |  | [optional] 
+**PciSegment** | **int32** |  |
+**Mmio32ApertureWeight** | Pointer to **int32** |  | [optional]
+**Mmio64ApertureWeight** | Pointer to **int32** |  | [optional]
 
 ## Methods
 

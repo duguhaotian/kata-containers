@@ -4,8 +4,8 @@
 
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
-**QueueIndex** | **int32** |  | 
-**HostCpus** | **[]int32** |  | 
+**QueueIndex** | **int32** |  |
+**HostCpus** | **[]int32** |  |
 
 ## Methods
 

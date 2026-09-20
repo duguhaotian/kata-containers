@@ -4,8 +4,8 @@
 
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
-**Path** | **string** |  | 
-**Access** | **string** |  | 
+**Path** | **string** |  |
+**Access** | **string** |  |
 
 ## Methods
 
