@@ -35,6 +35,7 @@ pub struct CloudHypervisorInner {
     pub(crate) timeout_secs: i32,
 
     pub(crate) netns: Option<String>,
+    pub(crate) restore_path: Option<String>,
 
     // Sandbox-specific directory
     pub(crate) vm_path: String,
@@ -110,6 +111,7 @@ impl CloudHypervisorInner {
             vm_path: String::default(),
             run_dir: String::default(),
             netns: None,
+            restore_path: None,
             pending_devices: vec![],
             device_ids: HashMap::<String, String>::new(),
             _capabilities: capabilities,
@@ -180,6 +182,7 @@ impl Persist for CloudHypervisorInner {
             vm_path: hypervisor_state.vm_path,
             run_dir: hypervisor_state.run_dir,
             netns: hypervisor_state.netns,
+            restore_path: None,
             guest_protection_to_use: hypervisor_state.guest_protection_to_use.clone(),
 
             pending_devices: vec![],

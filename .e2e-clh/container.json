@@ -1,0 +1,20 @@
+{
+  "metadata": {
+    "name": "counter",
+    "attempt": 0
+  },
+  "image": {
+    "image": "docker.io/library/busybox:latest"
+  },
+  "command": [
+    "sh",
+    "-c",
+    "i=0; while true; do i=$((i+1)); echo \"$i\" > /counter; sleep 1; done"
+  ],
+  "log_path": "counter.log",
+  "linux": {
+    "security_context": {
+      "privileged": false
+    }
+  }
+}

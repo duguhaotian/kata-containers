@@ -1,0 +1,10 @@
+version = 4
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata-clh]
+  runtime_type = 'io.containerd.kata.v2'
+  privileged_without_host_devices = true
+  sandboxer = 'podsandbox'
+  pod_annotations = ['io.katacontainers.*']
+
+  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata-clh.options]
+    ConfigPath = '/opt/kata/share/defaults/kata-containers/configuration-clh-runtime-rs.toml'

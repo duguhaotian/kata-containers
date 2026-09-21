@@ -1,0 +1,23 @@
+{
+  "metadata": {
+    "name": "clh-ckpt-restored",
+    "namespace": "default",
+    "uid": "clh-ckpt-restored",
+    "attempt": 0
+  },
+  "annotations": {
+    "io.katacontainers.config.hypervisor.default_memory": "256",
+    "io.katacontainers.vm.restore": "true",
+    "io.katacontainers.vm.checkpoint_dir": "/var/lib/kata/checkpoints/clh-e2e"
+  },
+  "log_directory": "/tmp/clh-ckpt-restored",
+  "linux": {
+    "security_context": {
+      "namespace_options": {
+        "network": 0,
+        "pid": 1,
+        "ipc": 0
+      }
+    }
+  }
+}

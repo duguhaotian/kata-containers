@@ -1,0 +1,21 @@
+{
+  "metadata": {
+    "name": "clh-ckpt-src",
+    "namespace": "default",
+    "uid": "clh-ckpt-src",
+    "attempt": 0
+  },
+  "annotations": {
+    "io.katacontainers.config.hypervisor.default_memory": "256"
+  },
+  "log_directory": "/tmp/clh-ckpt-src",
+  "linux": {
+    "security_context": {
+      "namespace_options": {
+        "network": 0,
+        "pid": 1,
+        "ipc": 0
+      }
+    }
+  }
+}

@@ -5,6 +5,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
@@ -38,6 +39,20 @@ impl VirtCheckpointRestore {
             sandbox,
             container_manager,
         }
+    }
+
+    async fn reconnect_agent(&self) -> Result<()> {
+        let address = self
+            .sandbox
+            .hypervisor
+            .get_agent_socket()
+            .await
+            .context("get agent socket after checkpoint")?;
+        self.sandbox
+            .get_agent()
+            .start(&address)
+            .await
+            .context("reconnect agent after checkpoint")
     }
 }
 
@@ -77,19 +92,21 @@ impl VirtSandbox {
         )
         .context("parse checkpoint metadata")?;
 
-        let passthrough = resource::share_fs::get_host_rw_shared_path(&self.sid).join("passthrough");
-        copy_passthrough_files(
-            &checkpoint_dir.join("share-passthrough"),
-            &passthrough,
-        )
-        .await
-        .context("restore virtio-fs passthrough files")?;
+        let passthrough =
+            resource::share_fs::get_host_rw_shared_path(&self.sid).join("passthrough");
+        copy_passthrough_files(&checkpoint_dir.join("share-passthrough"), &passthrough)
+            .await
+            .context("restore virtio-fs passthrough files")?;
 
         for container in metadata.containers {
             let container_dir = checkpoint_dir.join("containers").join(&container.old_id);
-            let upper = container_dir.join("rw-diff");
-            let work = container_dir.join("rw-work");
-            let merged = container_dir.join("merged");
+            let restore_dir = container_dir.join("restores").join(&self.sid);
+            let upper = restore_dir.join("rw-diff");
+            let work = restore_dir.join("rw-work");
+            let merged = restore_dir.join("merged");
+            copy_rw_diff(&container_dir.join("rw-diff"), &upper)
+                .await
+                .context("clone checkpoint overlay upperdir")?;
             tokio::fs::create_dir_all(&work).await?;
             tokio::fs::create_dir_all(&merged).await?;
             let options = format!(
@@ -200,9 +217,9 @@ fn rootfs_overlay_paths(bundle: &str, mounts: &[Mount]) -> Result<(Vec<String>, 
     bail!("cannot locate overlay upperdir for bundle {bundle}")
 }
 
-async fn copy_rw_diff(source: &str, destination: &Path) -> Result<()> {
+async fn copy_rw_diff(source: &Path, destination: &Path) -> Result<()> {
     tokio::fs::create_dir_all(destination).await?;
-    let source_dot = Path::new(source).join(".");
+    let source_dot = source.join(".");
     let status = tokio::process::Command::new("cp")
         .arg("-a")
         .arg("--reflink=auto")
@@ -238,7 +255,7 @@ impl SandboxCheckpointRestore for VirtCheckpointRestore {
             .hypervisor
             .save_vm_to(&req.output_path)
             .await
-            .context("save QEMU checkpoint")?;
+            .context("save VM checkpoint")?;
 
         let passthrough =
             resource::share_fs::get_host_rw_shared_path(&self.sandbox.sid).join("passthrough");
@@ -268,7 +285,7 @@ impl SandboxCheckpointRestore for VirtCheckpointRestore {
             let container_dir = Path::new(&req.output_path)
                 .join("containers")
                 .join(container.container_id.to_string());
-            copy_rw_diff(&upper_dir, &container_dir.join("rw-diff")).await?;
+            copy_rw_diff(Path::new(&upper_dir), &container_dir.join("rw-diff")).await?;
             tokio::fs::create_dir_all(container_dir.join("rw-work")).await?;
             tokio::fs::create_dir_all(container_dir.join("merged")).await?;
             metadata.containers.push(CheckpointContainerMetadata {
@@ -314,19 +331,28 @@ impl SandboxCheckpointRestore for VirtCheckpointRestore {
 
 #[async_trait]
 impl ContainerCheckpointRestore for VirtCheckpointRestore {
-    async fn prepare_checkpoint_tasks(
-        &self,
-        _tasks: &mut [SandboxCheckpointTask],
-    ) -> Result<()> {
+    async fn prepare_checkpoint_tasks(&self, _tasks: &mut [SandboxCheckpointTask]) -> Result<()> {
         Ok(())
     }
 
     async fn pause_checkpoint_tasks(&self, _tasks: &[SandboxCheckpointTask]) -> Result<()> {
         self.sandbox
-            .hypervisor
-            .pause_vm()
+            .get_agent()
+            .disconnect()
             .await
-            .context("pause QEMU")
+            .context("disconnect agent before checkpoint")?;
+        // Let the guest observe the closed vsock connection and return its
+        // ttrpc server to accept() before freezing device and process state.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Err(err) = self.sandbox.hypervisor.pause_vm().await.context("pause VM") {
+            return match self.reconnect_agent().await {
+                Ok(()) => Err(err),
+                Err(reconnect_err) => Err(err).with_context(|| {
+                    format!("failed to reconnect agent after pause error: {reconnect_err:#}")
+                }),
+            };
+        }
+        Ok(())
     }
 
     async fn resume_checkpoint_tasks(&self, _tasks: &[SandboxCheckpointTask]) -> Result<()> {
@@ -334,7 +360,8 @@ impl ContainerCheckpointRestore for VirtCheckpointRestore {
             .hypervisor
             .resume_vm()
             .await
-            .context("resume QEMU")
+            .context("resume VM")?;
+        self.reconnect_agent().await
     }
 
     async fn restore_tasks(

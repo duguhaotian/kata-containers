@@ -99,6 +99,29 @@ pub struct VmSnapshotConfig {
 #[derive(Clone, Deserialize, Serialize, Default, Debug)]
 pub struct RestoreConfig {
     pub source_url: String,
+    #[serde(default, skip_serializing_if = "MemoryRestoreMode::is_copy")]
+    pub memory_restore_mode: MemoryRestoreMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_fds: Option<Vec<RestoredNetConfig>>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, Default, Debug, PartialEq, Eq)]
+pub enum MemoryRestoreMode {
+    #[default]
+    Copy,
+    OnDemand,
+}
+
+impl MemoryRestoreMode {
+    fn is_copy(&self) -> bool {
+        matches!(self, Self::Copy)
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize, Default, Debug, PartialEq, Eq)]
+pub struct RestoredNetConfig {
+    pub id: String,
+    pub num_fds: usize,
 }
 
 pub async fn cloud_hypervisor_vm_snapshot(
@@ -113,8 +136,17 @@ pub async fn cloud_hypervisor_vm_restore(
     api_socket: &ApiSocket,
     cfg: RestoreConfig,
 ) -> Result<Option<String>> {
+    cloud_hypervisor_vm_restore_with_fds(api_socket, cfg, Vec::new()).await
+}
+
+pub async fn cloud_hypervisor_vm_restore_with_fds(
+    api_socket: &ApiSocket,
+    cfg: RestoreConfig,
+    fds: Vec<RawFd>,
+) -> Result<Option<String>> {
     let body = serde_json::to_string(&cfg)?;
-    api_command(api_socket, "PUT", "vm.restore", Some(body), None).await
+    let fds = (!fds.is_empty()).then_some(fds);
+    api_command(api_socket, "PUT", "vm.restore", Some(body), fds).await
 }
 
 #[allow(dead_code)]
@@ -211,4 +243,30 @@ pub async fn cloud_hypervisor_vm_resize(
 ) -> Result<Option<String>> {
     let body = serde_json::to_string(&vmresize)?;
     api_command(api_socket, "PUT", "vm.resize", Some(body), None).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_restore_config_serializes_network_fd_metadata() {
+        let config = RestoreConfig {
+            source_url: "file:///checkpoint".to_string(),
+            memory_restore_mode: MemoryRestoreMode::OnDemand,
+            net_fds: Some(vec![RestoredNetConfig {
+                id: "_net0".to_string(),
+                num_fds: 2,
+            }]),
+        };
+
+        assert_eq!(
+            serde_json::to_value(config).unwrap(),
+            serde_json::json!({
+                "source_url": "file:///checkpoint",
+                "memory_restore_mode": "OnDemand",
+                "net_fds": [{"id": "_net0", "num_fds": 2}]
+            })
+        );
+    }
 }
