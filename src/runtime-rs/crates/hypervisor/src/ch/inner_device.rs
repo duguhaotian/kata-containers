@@ -280,8 +280,13 @@ impl CloudHypervisorInner {
         Ok(DeviceType::HybridVsock(device))
     }
 
-    fn make_disk_config(&self, config: &BlockConfigModern) -> Result<DiskConfig> {
+    fn make_disk_config(
+        &self,
+        config: &BlockConfigModern,
+        device_id: Option<&str>,
+    ) -> Result<DiskConfig> {
         let mut disk_config = DiskConfig::try_from(config.clone())?;
+        disk_config.id = device_id.map(str::to_string);
 
         disk_config.direct = config
             .is_direct
@@ -318,7 +323,7 @@ impl CloudHypervisorInner {
             (dev.device_id.clone(), dev.config.clone())
         };
 
-        let disk_config = self.make_disk_config(&config)?;
+        let disk_config = self.make_disk_config(&config, Some(&device_id))?;
 
         let response = cloud_hypervisor_vm_blockdev_add(&self.api_socket, disk_config).await?;
 
@@ -500,7 +505,10 @@ impl CloudHypervisorInner {
                     }
                 }
                 DeviceType::BlockModern(block_device) => {
-                    let config = block_device.lock().await.config.clone();
+                    let block_device = block_device.lock().await;
+                    let config = block_device.config.clone();
+                    let device_id = block_device.device_id.clone();
+                    drop(block_device);
 
                     if self.is_vm_boot_file(&config.path_on_host) {
                         // Already handled through the VmConfig payload/disks.
@@ -521,7 +529,7 @@ impl CloudHypervisorInner {
 
                     info!(sl!(), "cold-plugging block device {:?}", &config);
 
-                    boot_disks.push(self.make_disk_config(&config)?);
+                    boot_disks.push(self.make_disk_config(&config, Some(&device_id))?);
                 }
                 _ => continue,
             }
@@ -562,6 +570,11 @@ impl TryFrom<BlockConfigModern> for DiskConfig {
     type Error = anyhow::Error;
 
     fn try_from(blkcfg: BlockConfigModern) -> Result<Self, Self::Error> {
+        if blkcfg.vmdk.is_some() {
+            return Err(anyhow!(
+                "Cloud Hypervisor does not support structured VMDK block devices"
+            ));
+        }
         let disk_config: DiskConfig = DiskConfig {
             path: Some(blkcfg.path_on_host.as_str().into()),
             readonly: blkcfg.is_readonly,
@@ -658,5 +671,19 @@ mod tests {
         let net = NetConfig::try_from(cfg);
         assert!(net.is_ok());
         assert_eq!(net.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_blockconfig_to_diskconfig_rejects_structured_vmdk() {
+        let config = BlockConfigModern {
+            path_on_host: "/reserved/descriptor.vmdk".to_string(),
+            vmdk: Some(crate::VmdkConfig::default()),
+            ..Default::default()
+        };
+
+        let error = DiskConfig::try_from(config).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not support structured VMDK"));
     }
 }

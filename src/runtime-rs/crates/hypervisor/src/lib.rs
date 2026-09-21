@@ -177,6 +177,13 @@ pub trait Hypervisor: std::fmt::Debug + Send + Sync {
     async fn guest_memory_block_size(&self) -> u32;
     async fn get_passfd_listener_addr(&self) -> Result<(String, u32)>;
 
+    /// Return whether this backend can consume the structured VMDK layout in
+    /// `BlockConfigModern`. Backends that only accept raw disk images must
+    /// leave this disabled.
+    fn supports_structured_vmdk(&self) -> bool {
+        false
+    }
+
     /// Resolve the in-guest PCIe path for a cold-plugged physical-endpoint VF
     /// by querying QMP (query-pci + device search by QEMU device ID).
     /// Only meaningful after the VM has started and QMP is initialised.

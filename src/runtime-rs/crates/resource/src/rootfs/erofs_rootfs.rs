@@ -384,6 +384,7 @@ pub(crate) struct ErofsMultiLayerRootfs {
 impl ErofsMultiLayerRootfs {
     pub async fn new(
         device_manager: &RwLock<DeviceManager>,
+        hypervisor: &dyn hypervisor::Hypervisor,
         sid: &str,
         cid: &str,
         rootfs_mounts: &[Mount],
@@ -528,8 +529,78 @@ impl ErofsMultiLayerRootfs {
                         .collect();
                     let total_erofs_mounts = erofs_mounts_indexed.len();
 
-                    // GPT+VMDK mode: Multiple independent erofs layer files
+                    // Multiple independent EROFS layer files. QEMU combines
+                    // them in a structured GPT/VMDK layout. Raw-only
+                    // hypervisors attach one virtio-blk disk per layer.
                     if total_erofs_mounts > 1 {
+                        if !hypervisor.supports_structured_vmdk() {
+                            info!(
+                                sl!(),
+                                "multi-layer erofs: attaching {} independent raw layers",
+                                total_erofs_mounts
+                            );
+
+                            for (_, erofs_mount) in erofs_mounts_indexed {
+                                let options_map: HashMap<String, String> = erofs_mount
+                                    .options
+                                    .iter()
+                                    .filter_map(|option| {
+                                        option.split_once('=').map(|(key, value)| {
+                                            (key.to_string(), value.to_string())
+                                        })
+                                    })
+                                    .collect();
+                                if extract_dmverity_annotation(&options_map).is_some() {
+                                    return Err(anyhow!(
+                                        "dm-verity for independent raw EROFS layers is not supported by this hypervisor"
+                                    ));
+                                }
+
+                                let device_config = BlockConfigModern {
+                                    driver_option: block_driver.clone(),
+                                    path_on_host: erofs_mount.source.clone(),
+                                    is_readonly: true,
+                                    blkdev_aio: BlockDeviceAio::new(&blkdev_info.block_device_aio),
+                                    num_queues: blkdev_info.num_queues,
+                                    queue_size: blkdev_info.queue_size,
+                                    ..Default::default()
+                                };
+                                let device_info = do_handle_device(
+                                    device_manager,
+                                    &DeviceConfig::BlockCfgModern(device_config),
+                                )
+                                .await
+                                .with_context(|| {
+                                    format!(
+                                        "failed to attach raw EROFS layer {}",
+                                        erofs_mount.source
+                                    )
+                                })?;
+                                let (mut storage, device_id) =
+                                    extract_block_device_info(&device_info, true).await?;
+                                storage.fs_type = EROFS_ROOTFS_TYPE.to_string();
+                                storage.mount_point = container_path.clone();
+                                storage.options = erofs_mount
+                                    .options
+                                    .iter()
+                                    .filter(|option| {
+                                        *option != "loop"
+                                            && !option.starts_with("device=")
+                                            && !option.starts_with("X-containerd.")
+                                            && !option.starts_with("X-kata.")
+                                    })
+                                    .cloned()
+                                    .collect();
+                                storage.options.push("X-kata.overlay-lower".to_string());
+                                storage.options.push("X-kata.multi-layer=true".to_string());
+                                erofs_storages.push(storage);
+                                device_ids.push(device_id);
+                            }
+
+                            gpt_erofs_processed = true;
+                            continue;
+                        }
+
                         info!(
                             sl!(),
                             "multi-layer erofs: using GPT+VMDK mode for {} independent layers",
@@ -735,6 +806,12 @@ impl ErofsMultiLayerRootfs {
                             if let Some(device_path) = opt.strip_prefix("device=") {
                                 erofs_devices.push(device_path.to_string());
                             }
+                        }
+
+                        if erofs_devices.len() > 1 && !hypervisor.supports_structured_vmdk() {
+                            return Err(anyhow!(
+                                "fsmerged EROFS with multiple backing files requires structured VMDK support"
+                            ));
                         }
 
                         info!(sl!(), "EROFS devices count: {}", erofs_devices.len());

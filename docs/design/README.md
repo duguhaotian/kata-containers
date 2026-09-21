@@ -22,6 +22,8 @@ Kata Containers design documents:
 - [Virtualization Reference Architecture](kata-vra.md)
 - [QEMU Pod checkpoint and restore (verification design)](qemu-pod-checkpoint-restore.md)
 - [QEMU Pod checkpoint and restore debugging](qemu-pod-checkpoint-restore-debugging.md)
+- [Cloud Hypervisor checkpoint and restore with EROFS block devices](cloud-hypervisor-erofs-checkpoint-restore.md)
+- [Cloud Hypervisor checkpoint and restore debugging](cloud-hypervisor-checkpoint-restore-debugging.md)
 ---
 
 - [Design proposals](proposals)

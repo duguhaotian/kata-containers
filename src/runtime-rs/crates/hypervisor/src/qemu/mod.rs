@@ -222,6 +222,10 @@ impl Hypervisor for Qemu {
         Err(anyhow::anyhow!("Not yet supported"))
     }
 
+    fn supports_structured_vmdk(&self) -> bool {
+        true
+    }
+
     async fn resolve_vfio_device_pci_path(&self, hostdev_id: &str) -> Result<PciPath> {
         self.inner
             .write()

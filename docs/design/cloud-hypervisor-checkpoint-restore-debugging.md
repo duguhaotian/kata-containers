@@ -6,6 +6,12 @@ with Cloud Hypervisor v53.0 and runtime-rs. It complements the
 focuses on failures that only became visible while restoring a running
 virtio-fs workload.
 
+The proposed
+[EROFS block-device design](cloud-hypervisor-erofs-checkpoint-restore.md)
+removes `virtiofsd` from the container rootfs path. This document remains the
+reference for the currently verified virtio-fs implementation and the
+control-plane fixes that both storage designs share.
+
 The verified flow is:
 
 1. Start a Pod with the `kata-clh` runtime.

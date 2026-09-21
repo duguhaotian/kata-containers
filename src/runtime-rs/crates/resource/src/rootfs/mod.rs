@@ -103,10 +103,16 @@ impl RootFsResource {
                     rootfs_mounts.len()
                 );
 
-                let multi_layer =
-                    ErofsMultiLayerRootfs::new(device_manager, sid, cid, rootfs_mounts, share_fs)
-                        .await
-                        .context("new multi-layer erofs rootfs")?;
+                let multi_layer = ErofsMultiLayerRootfs::new(
+                    device_manager,
+                    h,
+                    sid,
+                    cid,
+                    rootfs_mounts,
+                    share_fs,
+                )
+                .await
+                .context("new multi-layer erofs rootfs")?;
 
                 let ret = Arc::new(multi_layer);
                 let mut inner = self.inner.write().await;

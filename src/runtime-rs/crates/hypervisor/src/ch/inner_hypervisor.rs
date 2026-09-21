@@ -39,6 +39,7 @@ use kata_types::config::hypervisor::RootlessUser;
 use kata_types::rootless::is_rootless;
 use lazy_static::lazy_static;
 use nix::sched::{setns, CloneFlags};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -71,6 +72,28 @@ const CH_FEATURE_TDX: &str = "tdx";
 const CLH_TEMPLATE_STATE_FILE: &str = "state.json";
 const CLH_TEMPLATE_CONFIG_FILE: &str = "config.json";
 const CLH_SNAPSHOT_MEMORY_FILE: &str = "memory-ranges";
+
+#[derive(Deserialize)]
+struct CheckpointStorageMetadata {
+    containers: Vec<CheckpointStorageContainer>,
+}
+
+#[derive(Deserialize)]
+struct CheckpointStorageContainer {
+    #[serde(default)]
+    block_disks: Vec<CheckpointStorageDisk>,
+}
+
+#[derive(Clone, Deserialize)]
+struct CheckpointStorageDisk {
+    id: String,
+    role: String,
+    path: String,
+    readonly: bool,
+    size: u64,
+    num_queues: usize,
+    queue_size: u64,
+}
 
 #[derive(Debug, PartialEq)]
 enum CloudHypervisorLogLevel {
@@ -398,6 +421,214 @@ impl CloudHypervisorInner {
         Ok(restored_networks)
     }
 
+    fn patch_checkpoint_disk_paths(
+        checkpoint_dir: &Path,
+        config_path: &Path,
+        vm_path: &Path,
+        boot_image: &str,
+    ) -> Result<()> {
+        let checkpoint_root = fs::canonicalize(checkpoint_dir)
+            .with_context(|| format!("canonicalize {}", checkpoint_dir.display()))?;
+        let metadata_path = checkpoint_dir.join("metadata.json");
+        let metadata_file = fs::symlink_metadata(&metadata_path)
+            .with_context(|| format!("access {}", metadata_path.display()))?;
+        if metadata_file.file_type().is_symlink() || !metadata_file.is_file() {
+            return Err(anyhow!(
+                "checkpoint metadata is not a regular file: {}",
+                metadata_path.display()
+            ));
+        }
+        if !fs::canonicalize(&metadata_path)
+            .with_context(|| format!("canonicalize {}", metadata_path.display()))?
+            .starts_with(&checkpoint_root)
+        {
+            return Err(anyhow!(
+                "checkpoint metadata escapes {}",
+                checkpoint_root.display()
+            ));
+        }
+        let metadata: CheckpointStorageMetadata = serde_json::from_slice(
+            &fs::read(&metadata_path)
+                .with_context(|| format!("read {}", metadata_path.display()))?,
+        )
+        .with_context(|| format!("parse {}", metadata_path.display()))?;
+        let mut block_disks: HashMap<String, CheckpointStorageDisk> = HashMap::new();
+        for disk in metadata
+            .containers
+            .into_iter()
+            .flat_map(|container| container.block_disks)
+        {
+            if let Some(saved) = block_disks.get(&disk.id) {
+                if saved.role != disk.role
+                    || saved.path != disk.path
+                    || saved.readonly != disk.readonly
+                    || saved.size != disk.size
+                    || saved.num_queues != disk.num_queues
+                    || saved.queue_size != disk.queue_size
+                {
+                    return Err(anyhow!(
+                        "checkpoint disk id {} has conflicting metadata",
+                        disk.id
+                    ));
+                }
+            } else {
+                block_disks.insert(disk.id.clone(), disk);
+            }
+        }
+        let mut config: Value = serde_json::from_slice(
+            &fs::read(config_path).with_context(|| format!("read {}", config_path.display()))?,
+        )
+        .with_context(|| format!("parse {}", config_path.display()))?;
+        let disks = config
+            .get_mut("disks")
+            .and_then(Value::as_array_mut)
+            .context("checkpoint config missing block disks")?;
+        for disk in disks.iter() {
+            let path = disk
+                .get("path")
+                .and_then(Value::as_str)
+                .context("checkpoint config disk is missing a path")?;
+            if path == boot_image {
+                continue;
+            }
+            let id = disk
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .context("checkpoint config non-boot disk is missing an id")?;
+            if !block_disks.contains_key(id) {
+                return Err(anyhow!(
+                    "checkpoint disk id {id} is not represented in block metadata"
+                ));
+            }
+        }
+        if block_disks.is_empty() {
+            return Ok(());
+        }
+        let private_disk_dir = vm_path.join("checkpoint-disks");
+        fs::create_dir_all(&private_disk_dir)
+            .with_context(|| format!("create {}", private_disk_dir.display()))?;
+
+        for saved in block_disks.values() {
+            if saved.id.is_empty()
+                || !saved
+                    .id
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+            {
+                return Err(anyhow!("invalid checkpoint disk id {:?}", saved.id));
+            }
+            let relative = Path::new(&saved.path);
+            if relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(anyhow!("invalid checkpoint disk path {:?}", saved.path));
+            }
+            let source = checkpoint_dir.join(relative);
+            let source_metadata = fs::symlink_metadata(&source)
+                .with_context(|| format!("access checkpoint disk {}", source.display()))?;
+            if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
+                return Err(anyhow!(
+                    "checkpoint disk is not a regular file: {}",
+                    source.display()
+                ));
+            }
+            let source = fs::canonicalize(&source)
+                .with_context(|| format!("canonicalize checkpoint disk {}", source.display()))?;
+            if !source.starts_with(&checkpoint_root) {
+                return Err(anyhow!(
+                    "checkpoint disk {} escapes {}",
+                    source.display(),
+                    checkpoint_root.display()
+                ));
+            }
+            let source_size = source_metadata.len();
+            if source_size != saved.size {
+                return Err(anyhow!(
+                    "checkpoint disk {} size changed: expected {}, got {}",
+                    saved.id,
+                    saved.size,
+                    source_size
+                ));
+            }
+
+            let disk = disks
+                .iter_mut()
+                .find(|disk| disk.get("id").and_then(Value::as_str) == Some(saved.id.as_str()))
+                .with_context(|| format!("checkpoint config missing disk id {}", saved.id))?;
+            if disk
+                .get("readonly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                != saved.readonly
+            {
+                return Err(anyhow!(
+                    "checkpoint disk {} readonly setting does not match",
+                    saved.id
+                ));
+            }
+            if disk
+                .get("num_queues")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+                != saved.num_queues as u64
+                || disk
+                    .get("queue_size")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default()
+                    != saved.queue_size
+            {
+                return Err(anyhow!(
+                    "checkpoint disk {} queue settings do not match",
+                    saved.id
+                ));
+            }
+
+            let restored_path = if saved.role == "ext4-upper" {
+                let destination = private_disk_dir.join(format!("{}.ext4", saved.id));
+                if fs::symlink_metadata(&destination).is_ok() {
+                    return Err(anyhow!(
+                        "private checkpoint disk already exists: {}",
+                        destination.display()
+                    ));
+                }
+                let status = std::process::Command::new("cp")
+                    .arg("-a")
+                    .arg("--reflink=auto")
+                    .arg("--sparse=always")
+                    .arg(&source)
+                    .arg(&destination)
+                    .status()
+                    .with_context(|| format!("clone checkpoint disk {}", source.display()))?;
+                if !status.success() {
+                    return Err(anyhow!(
+                        "clone checkpoint disk {} failed with {status}",
+                        source.display()
+                    ));
+                }
+                destination
+            } else if saved.role == "erofs-lower" {
+                source
+            } else {
+                return Err(anyhow!(
+                    "checkpoint disk {} has unsupported role {:?}",
+                    saved.id,
+                    saved.role
+                ));
+            };
+            disk.as_object_mut()
+                .context("checkpoint config has invalid disk entry")?
+                .insert(
+                    "path".to_string(),
+                    Value::String(restored_path.display().to_string()),
+                );
+        }
+
+        Self::write_json_file(config_path, &config)
+    }
+
     fn patch_snapshot_memory_shared(config_path: &Path, shared: bool) -> Result<()> {
         let data =
             fs::read(config_path).with_context(|| format!("read {}", config_path.display()))?;
@@ -469,6 +700,13 @@ impl CloudHypervisorInner {
         let dst_memory = vm_path.join(CLH_SNAPSHOT_MEMORY_FILE);
         Self::copy_template_artifact(&src_config, &dst_config).context("copy checkpoint config")?;
         Self::copy_template_artifact(&src_state, &dst_state).context("copy checkpoint state")?;
+        Self::patch_checkpoint_disk_paths(
+            checkpoint_dir,
+            &dst_config,
+            &vm_path,
+            &self.config.boot_info.image,
+        )
+        .context("prepare checkpoint block disks")?;
         if fs::symlink_metadata(&dst_memory).is_ok() {
             return Err(anyhow!(
                 "restore memory path already exists: {}",
@@ -984,7 +1222,7 @@ impl CloudHypervisorInner {
                 None,
                 Vec::new(),
             )
-                .await?;
+            .await?;
             self.resume_vm().await?;
         } else {
             if self.config.vm_template.boot_from_template {
@@ -1052,25 +1290,20 @@ impl CloudHypervisorInner {
 
     pub(crate) async fn save_vm_to(&self, output_path: &str) -> Result<()> {
         let snapshot_dir = Path::new(output_path);
-        fs::create_dir_all(snapshot_dir).with_context(|| {
+        if let Some(parent) = snapshot_dir.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "create Cloud Hypervisor checkpoint parent {}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::create_dir(snapshot_dir).with_context(|| {
             format!(
                 "create Cloud Hypervisor checkpoint directory {}",
                 snapshot_dir.display()
             )
         })?;
-        for name in [
-            CLH_TEMPLATE_CONFIG_FILE,
-            CLH_TEMPLATE_STATE_FILE,
-            CLH_SNAPSHOT_MEMORY_FILE,
-        ] {
-            let path = snapshot_dir.join(name);
-            if fs::symlink_metadata(&path).is_ok() {
-                return Err(anyhow!(
-                    "Cloud Hypervisor checkpoint artifact already exists: {}",
-                    path.display()
-                ));
-            }
-        }
 
         self.snapshot_vm_to(snapshot_dir).await?;
         let memory_path = snapshot_dir.join(CLH_SNAPSHOT_MEMORY_FILE);
@@ -1582,19 +1815,16 @@ mod tests {
         fs::create_dir(&checkpoint_dir).unwrap();
         fs::write(
             checkpoint_dir.join(CLH_TEMPLATE_CONFIG_FILE),
-            br#"{"vsock":{"socket":"/old/vsock.sock"}}"#,
+            br#"{"vsock":{"socket":"/old/vsock.sock"},"disks":[]}"#,
         )
         .unwrap();
         fs::write(
-            checkpoint_dir.join(CLH_TEMPLATE_STATE_FILE),
-            b"state",
+            checkpoint_dir.join("metadata.json"),
+            br#"{"containers":[]}"#,
         )
         .unwrap();
-        fs::write(
-            checkpoint_dir.join(CLH_SNAPSHOT_MEMORY_FILE),
-            b"memory",
-        )
-        .unwrap();
+        fs::write(checkpoint_dir.join(CLH_TEMPLATE_STATE_FILE), b"state").unwrap();
+        fs::write(checkpoint_dir.join(CLH_SNAPSHOT_MEMORY_FILE), b"memory").unwrap();
 
         let mut ch = CloudHypervisorInner::default();
         ch.id = "sandbox-id".to_string();
@@ -1610,6 +1840,153 @@ mod tests {
             fs::read(vm_dir.join(CLH_TEMPLATE_STATE_FILE)).unwrap(),
             b"state"
         );
+    }
+
+    #[test]
+    fn test_patch_checkpoint_disk_paths_clones_writable_upper() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint_dir = dir.path().join("checkpoint");
+        let vm_dir = dir.path().join("vm");
+        fs::create_dir_all(checkpoint_dir.join("containers/c1")).unwrap();
+        fs::create_dir_all(&vm_dir).unwrap();
+        let lower = checkpoint_dir.join("containers/c1/lower-0.erofs");
+        let upper = checkpoint_dir.join("containers/c1/upper.ext4");
+        fs::write(&lower, b"lower").unwrap();
+        fs::write(&upper, b"upper").unwrap();
+        fs::write(
+            checkpoint_dir.join("metadata.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "containers": [{
+                    "block_disks": [
+                        {
+                            "id": "lower0",
+                            "role": "erofs-lower",
+                            "path": "containers/c1/lower-0.erofs",
+                            "readonly": true,
+                            "size": 5,
+                            "num_queues": 1,
+                            "queue_size": 128
+                        },
+                        {
+                            "id": "upper0",
+                            "role": "ext4-upper",
+                            "path": "containers/c1/upper.ext4",
+                            "readonly": false,
+                            "size": 5,
+                            "num_queues": 1,
+                            "queue_size": 128
+                        }
+                    ]
+                }, {
+                    "block_disks": [{
+                        "id": "lower0",
+                        "role": "erofs-lower",
+                        "path": "containers/c1/lower-0.erofs",
+                        "readonly": true,
+                        "size": 5,
+                        "num_queues": 1,
+                        "queue_size": 128
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let config_path = vm_dir.join("config.json");
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&serde_json::json!({
+                "disks": [
+                    {
+                        "id": "lower0",
+                        "path": "/old/lower",
+                        "readonly": true,
+                        "num_queues": 1,
+                        "queue_size": 128
+                    },
+                    {
+                        "id": "upper0",
+                        "path": "/old/upper",
+                        "readonly": false,
+                        "num_queues": 1,
+                        "queue_size": 128
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        CloudHypervisorInner::patch_checkpoint_disk_paths(
+            &checkpoint_dir,
+            &config_path,
+            &vm_dir,
+            "/boot/image",
+        )
+        .unwrap();
+
+        let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(config["disks"][0]["path"], lower.display().to_string());
+        let restored_upper = PathBuf::from(config["disks"][1]["path"].as_str().unwrap());
+        assert!(restored_upper.starts_with(vm_dir.join("checkpoint-disks")));
+        assert_eq!(fs::read(restored_upper).unwrap(), b"upper");
+        assert_eq!(fs::read(upper).unwrap(), b"upper");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_patch_checkpoint_disk_paths_rejects_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint_dir = dir.path().join("checkpoint");
+        let vm_dir = dir.path().join("vm");
+        fs::create_dir_all(&checkpoint_dir).unwrap();
+        fs::create_dir_all(&vm_dir).unwrap();
+        let outside = dir.path().join("outside.erofs");
+        fs::write(&outside, b"lower").unwrap();
+        std::os::unix::fs::symlink(&outside, checkpoint_dir.join("lower.erofs")).unwrap();
+        fs::write(
+            checkpoint_dir.join("metadata.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "containers": [{
+                    "block_disks": [{
+                        "id": "lower0",
+                        "role": "erofs-lower",
+                        "path": "lower.erofs",
+                        "readonly": true,
+                        "size": 5,
+                        "num_queues": 1,
+                        "queue_size": 128
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let config_path = vm_dir.join("config.json");
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&serde_json::json!({
+                "disks": [{
+                    "id": "lower0",
+                    "path": "/old/lower",
+                    "readonly": true,
+                    "num_queues": 1,
+                    "queue_size": 128
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = CloudHypervisorInner::patch_checkpoint_disk_paths(
+            &checkpoint_dir,
+            &config_path,
+            &vm_dir,
+            "/boot/image",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not a regular file"));
     }
 
     #[actix_rt::test]
