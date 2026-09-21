@@ -55,4 +55,5 @@
 - [How to use EROFS snapshotter with Kata Containers](how-to-use-erofs-snapshotter-with-kata.md)
 - [How to use NUMA with Kata Containers](how-to-use-numa-with-kata.md)
 - [How to build, install, and use QEMU Pod checkpoint and restore](how-to-build-and-use-qemu-pod-checkpoint-restore.md)
+- [How to build, install, and use Cloud Hypervisor checkpoint and restore](how-to-build-and-use-cloud-hypervisor-checkpoint-restore.md)
 

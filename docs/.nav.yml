@@ -22,6 +22,7 @@ nav:
       - Local Builds & Deployment: how-to/how-to-build-and-deploy-local-artifacts.md
       - virtio-fs with Kata: how-to/how-to-use-virtio-fs-with-kata.md
       - QEMU Pod Checkpoint/Restore: how-to/how-to-build-and-use-qemu-pod-checkpoint-restore.md
+      - Cloud Hypervisor Checkpoint/Restore: how-to/how-to-build-and-use-cloud-hypervisor-checkpoint-restore.md
     - Contributing:
       - Documentation: doc-contributing.md
   - Releases:

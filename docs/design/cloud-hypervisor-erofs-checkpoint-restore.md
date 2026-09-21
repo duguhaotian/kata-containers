@@ -7,6 +7,9 @@ raw EROFS devices on Cloud Hypervisor, archives EROFS and ext4 backing files,
 restores writable uppers from private clones, and rewrites saved Cloud
 Hypervisor disk paths by disk ID.
 
+For compile, install, and a `crictl` walkthrough, see
+[How to build, install, and use Cloud Hypervisor checkpoint and restore](../how-to/how-to-build-and-use-cloud-hypervisor-checkpoint-restore.md).
+
 Basic checkpoint and restore was verified with Cloud Hypervisor v53.0 and
 containerd v2.3.3 on September 21, 2026. The verified containerd configuration
 emitted one merged EROFS lower plus one ext4 upper for each active snapshot.

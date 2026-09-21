@@ -6,6 +6,10 @@ with Cloud Hypervisor v53.0 and runtime-rs. It complements the
 focuses on failures that only became visible while restoring a running
 virtio-fs workload.
 
+For compile, install, and a `crictl` walkthrough covering both virtio-fs and
+EROFS block devices, see
+[How to build, install, and use Cloud Hypervisor checkpoint and restore](../how-to/how-to-build-and-use-cloud-hypervisor-checkpoint-restore.md).
+
 The proposed
 [EROFS block-device design](cloud-hypervisor-erofs-checkpoint-restore.md)
 removes `virtiofsd` from the container rootfs path. This document remains the

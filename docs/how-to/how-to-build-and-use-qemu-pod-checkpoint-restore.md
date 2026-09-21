@@ -12,6 +12,8 @@ The design and failure archive live in
 [QEMU Pod checkpoint and restore](../design/qemu-pod-checkpoint-restore.md)
 and
 [QEMU Pod checkpoint and restore debugging](../design/qemu-pod-checkpoint-restore-debugging.md).
+The Cloud Hypervisor counterpart is
+[How to build, install, and use Cloud Hypervisor checkpoint and restore](how-to-build-and-use-cloud-hypervisor-checkpoint-restore.md).
 
 !!! warning "Verification, not a Kubernetes API"
     This path does **not** wait for CRI `CheckpointPod` / KEP-5823. Do not use
