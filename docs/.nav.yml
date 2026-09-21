@@ -29,5 +29,6 @@ nav:
   - Misc:
     - Architecture: design/architecture_4.0/architecture.md
     - QEMU Pod Checkpoint/Restore: design/qemu-pod-checkpoint-restore.md
+    - QEMU Pod Checkpoint/Restore Debugging: design/qemu-pod-checkpoint-restore-debugging.md
     - Cloud Hypervisor Checkpoint/Restore Debugging: design/cloud-hypervisor-checkpoint-restore-debugging.md
     - Config Migration (runtime to runtime-rs): migrating-config-go-runtime-to-runtime-rs.md

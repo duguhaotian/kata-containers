@@ -21,6 +21,7 @@ Kata Containers design documents:
 - [Design for core-scheduling](core-scheduling.md)
 - [Virtualization Reference Architecture](kata-vra.md)
 - [QEMU Pod checkpoint and restore (verification design)](qemu-pod-checkpoint-restore.md)
+- [QEMU Pod checkpoint and restore debugging](qemu-pod-checkpoint-restore-debugging.md)
 ---
 
 - [Design proposals](proposals)
