@@ -54,4 +54,5 @@
 - [How to size sandbox overhead in runtime-rs](how-to-size-sandbox-overhead-runtime-rs.md)
 - [How to use EROFS snapshotter with Kata Containers](how-to-use-erofs-snapshotter-with-kata.md)
 - [How to use NUMA with Kata Containers](how-to-use-numa-with-kata.md)
+- [How to build, install, and use QEMU Pod checkpoint and restore](how-to-build-and-use-qemu-pod-checkpoint-restore.md)
 

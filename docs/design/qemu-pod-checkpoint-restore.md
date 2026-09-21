@@ -6,6 +6,9 @@ This document records how to verify QEMU-level checkpoint and restore for a
 to prove the hypervisor and runtime can capture and resume guest execution state
 without waiting for a patched containerd or Kubernetes KEP-5823.
 
+For compile, install, and a `crictl` walkthrough, see
+[How to build, install, and use QEMU Pod checkpoint and restore](../how-to/how-to-build-and-use-qemu-pod-checkpoint-restore.md).
+
 The design deliberately **does not invent a private Kata protocol**. It reuses the
 `SandboxCheckpointRestore` / `ContainerCheckpointRestore` traits, `RebindSandbox`,
 and the agent-reconnect plumbing that #13654 already lands on the runtime-rs side.
